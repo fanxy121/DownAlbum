@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name          DownAlbum
 // @author        indream
-// @version       0.17.2.1
+// @version       0.17.3.1
 // @description   Download Facebook, Instagram, Pinterest, Twitter, Ask.fm, Weibo Album.
 // @namespace     DownAlbum
 // @updateURL     https://raw.githubusercontent.com/inDream/DownAlbum/master/DownAlbum.meta.js
@@ -616,7 +616,7 @@ function getPhotos(){
     qS('.fbStarGridWrapper~img') || qS('#browse_result_below_fold') ||
     (!qS('#browse_end_of_results_footer') && qS('#contentArea div.hidden_elem')
     && location.href.match('search')) ||
-    qS('#mainContainer span[aria-busy="true"]'));
+    qS('span[aria-busy="true"]'));
   if(g.ajaxFailed&&g.mode!=2&&scrollEle){scrollTo(0, document.body.clientHeight);setTimeout(getPhotos,2000);return;}
   var i, photodata = g.photodata, testNeeded = 0, ajaxNeeded = 0;
   var elms = g.elms || qS('#album_pagelet') || qS('#static_set_pagelet') || qS('#pagelet_photos_stream') || qS('#group_photoset') || qS('#initial_browse_result') || qS('#contentArea') || qS('._2eec');
@@ -935,7 +935,7 @@ function fbLoadPage() {
     g.statusEle.textContent = 'Loading album... (' + g.elms.length + ')';
     document.title = '(' + g.elms.length + ') ||' + g.photodata.aName;
 
-    if (d.page_info.has_next_page && !qS('#stopAjaxCkb').checked) {
+    if (d.page_info && d.page_info.has_next_page && !qS('#stopAjaxCkb').checked) {
       setTimeout(fbLoadPage, 1000);
     } else {
       console.log('Loaded ' + g.elms.length + ' photos.');
@@ -1234,67 +1234,101 @@ function instaAjax(){
 function buildIgQuery(max_id, loadCm) {
   var comments = '';
   if (loadCm) {
-    comments = 'comments { count, nodes{created_at, text, user{username}} }, ';
+    comments = 'comments.last(20) { count, nodes{created_at, text, user{username}} }, ';
   }
   return 'q=ig_user(' + g.Env.user.id + ') {media.after(' + max_id + ', 33) ' +
-    '{count, nodes {caption, code, ' + comments + 'date, display_src, id, ' +
-    'is_video, video_url, likes {count}, video_url }, page_info } }' +
-    '&ref=users%3A%3Ashow';
+    '{count, nodes {__typename, caption, code, ' + comments + 'date, ' +
+    'display_src, id, is_video, video_url, likes {count}, video_url }, ' +
+    'page_info } } &ref=users%3A%3Ashow';
 }
 function _instaQueryAdd(elms) {
   for (var i = 0; i < elms.length; i++) {
-    var url = parseFbSrc(elms[i].display_src);
-    if (g.loadCm) {
-      var c = elms[i].comments || {count: 0}, cList = [c.count];
-      if (c.nodes) {
-        for(var k = 0; k < c.nodes.length; k++){
-          var p = c.nodes[k];
-          if (p) {
-            cList.push({
-              name: p.user.username,
-              url: 'http://instagram.com/' + p.user.username,
-              text: p.text,
-              date: parseTime(p.created_at)
-            });
-          }
-        }
+    var c = elms[i].comments || {count: 0};
+    var cList = [c.count];
+    for (var k = 0; c.nodes && k < c.nodes.length; k++) {
+      var p = c.nodes[k];
+      if (p) {
+        cList.push({
+          name: p.user.username,
+          url: 'http://instagram.com/' + p.user.username,
+          text: p.text,
+          date: parseTime(p.created_at)
+        });
       }
     }
-    if(elms[i].is_video){
-      g.photodata.videos.push({
-        url: elms[i].video_url,
-        thumb: url
+    
+    var url;
+    if (elms[i].__typename === 'GraphSidecar') {
+      var edges = elms[i].edge_sidecar_to_children.edges;
+      for (var j = 0; j < edges.length; j++) {
+        var n = edges[j].node;
+        url = parseFbSrc(n.display_url);
+        if (n.is_video) {
+          g.photodata.videos.push({
+            url: n.video_url,
+            thumb: url
+          });
+        }
+        g.photodata.photos.push({
+          title: elms[i].caption || '',
+          url: url,
+          href: 'https://www.instagram.com/p/' + n.code + '/',
+          date: elms[i].date ? parseTime(elms[i].date) : '',
+          comments: c.nodes && c.nodes.length && j === 0 ? cList : ''
+        });
+      }
+    } else {
+      url = parseFbSrc(elms[i].display_src);
+      if (elms[i].is_video) {
+        g.photodata.videos.push({
+          url: elms[i].video_url,
+          thumb: url
+        });
+      }
+      g.photodata.photos.push({
+        title: elms[i].caption || '',
+        url: url,
+        href: 'https://www.instagram.com/p/' + elms[i].code + '/',
+        date: elms[i].date ? parseTime(elms[i].date) : '',
+        comments: c.nodes && c.nodes.length ? cList : ''
       });
     }
-    g.photodata.photos.push({
-      title: elms[i].caption || '',
-      url: url,
-      href: 'https://www.instagram.com/p/' + elms[i].code + '/',
-      date: elms[i].date ? parseTime(elms[i].date) : '',
-      comments: g.loadCm && c.nodes ? cList : ''
-    });
   }
 }
-function instaQueryInit() {
-  var xhr = new XMLHttpRequest();
-  xhr.onload = function() {
-    var res = {};
-    try {
-      res = JSON.parse(this.response);
-    } catch(e) {
-      alert('Fallback to old api!');
+function _instaQueryProcess(elms) {
+  for (var i = 0; i < elms.length; i++) {
+    var feed = elms[i];
+    if (feed.__typename === 'GraphSidecar' && !feed.edge_sidecar_to_children) {
+      var xhr = new XMLHttpRequest();
+      xhr.onload = function() {
+        var res = {};
+        try {
+          res = JSON.parse(this.response);
+        } catch(e) {
+          alert('Cannot get album content!');
+        }
+        elms[i] = res.media;
+        _instaQueryProcess(elms);
+      };
+      xhr.open('GET', 'https://www.instagram.com/p/' + feed.code + '/?__a=1');
+      xhr.setRequestHeader('X-Requested-With', 'XMLHttpRequest');
+      xhr.send();
+      return;
     }
-    if (res.media) {
-      _instaQueryAdd([res.media]);
-      instaQuery();
-    } else {
-      g.ajax = '';
-      instaAjax();
-    }
-  };
-  xhr.open('GET', 'https://www.instagram.com/p/' + g.Env.media[0].code +
-    '/?__a=1');
-  xhr.send();
+  }
+  _instaQueryAdd(elms);
+  var total = g.total;
+  var photodata = g.photodata;
+  console.log('Loaded '+photodata.photos.length+' of '+total+' photos.');
+  g.statusEle.textContent = 'Loaded ' + photodata.photos.length + ' / '+ total;
+  document.title="("+photodata.photos.length+"/"+total+") ||"+photodata.aName;
+  if (qS('#stopAjaxCkb') && qS('#stopAjaxCkb').checked) {
+    output();
+  } else if (g.ajax && +g.mode !== 2) {
+    setTimeout(instaQuery, 1000);
+  } else {
+    output();
+  }
 }
 function instaQuery() {
   var xhr = new XMLHttpRequest();
@@ -1310,20 +1344,9 @@ function instaQuery() {
       }
       return;
     }
-    var total=g.total, photodata=g.photodata,
-    res=JSON.parse(this.response),elms=res.media.nodes;
-    g.ajax = res.media.page_info.has_next_page ? elms[elms.length-1].id : null;
-    _instaQueryAdd(elms);
-    console.log('Loaded '+photodata.photos.length+' of '+total+' photos.');
-    g.statusEle.textContent = 'Loaded ' + g.photodata.photos.length + ' / '+ total;
-    document.title="("+g.photodata.photos.length+"/"+total+") ||"+g.photodata.aName;
-    if (qS('#stopAjaxCkb') && qS('#stopAjaxCkb').checked) {
-      output();
-    } else if (total > photodata.photos.length && g.ajax) {
-      setTimeout(instaQuery, 1000);
-    } else {
-      output();
-    }
+    var res = JSON.parse(this.response).media;
+    g.ajax = res.page_info.has_next_page ? res.page_info.end_cursor : null;
+    _instaQueryProcess(res.nodes);
   };
   xhr.open('POST', 'https://www.instagram.com/query/');
   xhr.setRequestHeader('Accept', 'application/json, text/javascript, */*; q=0.01');
@@ -1333,62 +1356,25 @@ function instaQuery() {
   xhr.setRequestHeader('X-Requested-With', 'XMLHttpRequest');
   xhr.send(buildIgQuery(g.ajax, g.loadCm));
 }
-function getInstagram(){
-  if(g.start!=2||g.start==3){return;}g.start=3;
-  var i, elms = g.Env.media, photodata = g.photodata, url;
-  if (g.Env.user.biography !== undefined && (g.mode!=2 || g.loadCm)) {
+function getInstagram() {
+  if (g.start != 2 || g.start == 3) {
+    return;
+  }
+  g.start = 3;
+  if (g.Env.user.biography !== undefined) {
     if (!g.Env.media) {
       closeDialog();
       return alert('Cannot download private account.');
     }
-    g.ajax = g.Env.media[0].id;
-    g.loadCm = false;
-    instaQueryInit();
-  } else {
-    for(i=0;i<elms.length;i++){
-      var c = elms[i].comments;
-      if (elms[i].images || elms[i].videos) {
-        url = parseFbSrc(elms[i].images.standard_resolution.url);
-        g.stored.push(url);
-        var cList = [c.count];
-        for(var j=0; j<c.data.length; j++){
-          var p = c.data[j];if(p){
-          cList.push({name: p.from.full_name || p.from.username, url: 'http://instagram.com/'+p.from.username, text: p.text, date: parseTime(p.created_time), id: elms[i].link});}
-        }
-        if(elms[i].videos){
-          photodata.videos.push({
-            url: elms[i].videos.standard_resolution.url,
-            thumb: url
-          });
-        }
-      } else {
-        url = parseFbSrc(elms[i].display_src);
-        g.stored.push(url);
-      }
-      var date = elms[i].date || elms[i].created_time;
-      photodata.photos.push({
-        title: elms[i].caption?elms[i].caption.text:'',
-        url: url,
-        href: elms[i].link,
-        date: date ? parseTime(date) : '',
-        comments: c.count?cList:''
-      });
-    }
-    var elms2=qSA('li.photo');
-    if(elms2&&!g.loadCm){ for(i=photodata.photos.length;i<elms2.length;i++){
-      var e = elms2[i].querySelector('.Image');
-      if(e){
-        url = parseFbSrc(e.style.backgroundImage.slice(4,-1).replace('6.jpg','7.jpg'));
-        g.stored.push(url);
-        photodata.photos.push({
-          title: '',
-          url: url,
-          date: elms2[i].querySelector('.photo-date').textContent,
-          href: elms2[i].querySelector('a').href||''
-        });
-      }
-    }}else if(g.mode==2&&elms2&&g.loadCm){g.total=elms2.length;}
-    if((g.mode!=2||g.loadCm)&&photodata.photos.length!=g.total){g.ajax=elms[elms.length-1].id;instaAjax();}else{output();}
+    var xhr = new XMLHttpRequest();
+    xhr.onload = function() {
+      var res = JSON.parse(this.response).user.media;
+      g.ajax = res.page_info.has_next_page ? res.page_info.end_cursor : null;
+      _instaQueryProcess(res.nodes);
+    };
+    xhr.open('GET', location.href + '?__a=1');
+    xhr.setRequestHeader('X-Requested-With', 'XMLHttpRequest');
+    xhr.send();
   }
 }
 function getTwitter(){
@@ -1627,8 +1613,8 @@ function getPinterest_sub(){
   }
 }
 function getAskFM() {
-  var url = location.protocol + '//ask.fm/' + g.username + 
-    '/answers/more?page=' + g.page;
+  var url = g.page || (location.protocol + '//ask.fm/' + g.username + 
+    '/answers/more?page=' + g.page);
   var xhr = new XMLHttpRequest();
   xhr.onload = function() {
     var html = getDOM(this.response);
@@ -1668,7 +1654,7 @@ function getAskFM() {
     g.statusEle.textContent = g.count + '/' + g.total;
     document.title = g.statusEle.textContent + ' ||' + g.title;
     if (g.count < g.total && hasMore && !qS('#stopAjaxCkb').checked) {
-      g.page++;
+      g.page = location.origin + hasMore.dataset.url;
       setTimeout(getAskFM, 500);
     } else {
       if (photodata.photos.length) {
@@ -1772,46 +1758,34 @@ var dFAcore = function(setup, bypass) {
       return alert('Please go to profile page.');
     }
     var xhr = new XMLHttpRequest();
-    xhr.onload = function(){
+    xhr.onload = function() {
       var html = this.response;
       var doc = getDOM(html);
-      try{
-        s=doc.querySelectorAll("script");
-        for(i=0;i<s.length;i++){
-          if(!s[i].src&&s[i].textContent.indexOf('_sharedData')>0){s=s[i].textContent;break;}
+      try {
+        s = doc.querySelectorAll('script');
+        for (i=0; i<s.length; i++) {
+          if (!s[i].src && s[i].textContent.indexOf('_sharedData') > 0) {
+            s = s[i].textContent;
+            break;
+          }
         }
-        g.Env=JSON.parse(s.match(/({".*})/)[1]);g.stored=[];
+        g.Env = JSON.parse(s.match(/({".*})/)[1]);
         g.token = g.Env.config.csrf_token;
         var data = g.Env.entry_data;
-        if (data.UserProfile || data.ProfilePage) {
-          g.Env = (data.UserProfile || data.ProfilePage)[0];
+        if (data.ProfilePage) {
+          g.Env = data.ProfilePage[0];
         } else {
           alert('Need to reload for required variable.');
-          location.reload(); return;
+          return location.reload();
         }
-      }catch(e){alert('Cannot load required variable!');}
-      var userName = qS(".-cx-PRIVATE-ProfilePage__username, h1 span a, h1 span");
-      userName = userName?userName.textContent:"";
-      if(userName && userName!=g.Env.user.username){
-        alert('Need to reload for required variable.');
-        location.reload(); return;
-      }
-      if(g.mode != 2){
-        g.total = qS('header li span span[class]') ?
-         +getText('header li span span[class]').replace(/,/g,'') : g.Env.user.media.count;
-      }else{
-        g.total = g.Env.user.media.count;
-      }
-      log(g.Env);
-      aName = g.Env.user.full_name;
-      if(!aName)aName='Instagram';
+      } catch(e) {alert('Cannot load required variable!');}
+      g.total = g.Env.user.media.count;
+      aName = g.Env.user.full_name || 'Instagram';
       aAuth = g.Env.user.username;
-      aLink = g.Env.user.website || g.Env.user.external_url;
-      if(!aLink)aLink='http://instagram.com/'+aAuth;
+      aLink = g.Env.user.external_url || ('http://instagram.com/'+  aAuth);
       g.Env.media = g.Env.user.media.nodes;
-      g.loadCm = true;
       var aTime = g.Env.media && g.Env.media.length ? 
-        g.Env.media[0].date || g.Env.media[0].created_time : 0;
+        g.Env.media[0].date : 0;
       g.photodata = {
         aName: aName.replace(/'|"/g,'\"'),
         aAuth: aAuth,
@@ -1990,7 +1964,7 @@ switch(request.type){
       .fbPhotosPhotoTagboxes{height:100%;left:0;position:absolute;top:0;width:100%;/*pointer-events:none*/}.fbPhotosPhotoTagboxes .tagsWrapper{display:inline-block;height:100%;width:100%;position:relative;vertical-align:middle}.fbPhotosPhotoTagboxBase{line-height:normal;position:absolute}.imageLoading .fbPhotosPhotoTagboxBase{display:none}/*.fbPhotosPhotoTagboxBase .borderTagBox, .fbPhotosPhotoTagboxBase .innerTagBox{-webkit-box-sizing:border-box;height:100%;width:100%}.ieContentFix{display:none;font-size:200px;height:100%;overflow:hidden;width:100%}.fbPhotosPhotoTagboxBase .innerTagBox{border:4px solid #fff;border-color:rgba(255, 255, 255, .8)}*/.fbPhotosPhotoTagboxBase .tag{bottom:0;left:50%;position:absolute}.fbPhotosPhotoTagboxBase .tagPointer{left:-50%;position:relative}.fbPhotosPhotoTagboxBase .tagArrow{left:50%;margin-left:-10px;position:absolute;top:-10px}.fbPhotosPhotoTagboxBase .tagName{background:#fff;color:#404040;cursor:default;font-weight:normal;padding:2px 6px 3px;top:3px;white-space:nowrap}.fancybox-inner:hover .fbPhotosPhotoTagboxes{opacity:1;z-index:9998;}.fbPhotosPhotoTagboxes .tagBox .tag{top:85%;z-index:9999}.fbPhotosPhotoTagboxes .tag, .fbPhotosPhotoTagboxes .innerTagBox, .fbPhotosPhotoTagboxes .borderTagBox{visibility:hidden}.tagBox:hover .tag/*, .tagBox:hover .innerTagBox*/{opacity:1;/*-webkit-transition:opacity .2s linear;*/visibility:visible}</style>';
     tHTML=tHTML+'<header id="hd"><div class="logo" id="logo"><div class="wrapper"><h1><a id="aName" href='+c.aLink+'>'+c.aName+'</a> '+((c.aAuth)?'- '+c.aAuth:"")+' <button onClick="cleanup()">ReStyle</button></h1><h1>Press Ctrl+S / [Mac]Command+S (with Complete option) to save all photos. [Photos are located in _files folder]</h1></div></div></header>';
     tHTML=tHTML+'<center id="aTime">'+c.aTime+'</center><br><center id="aDes">'+c.aDes+'</center><center>Download at: '+c.dTime+'</center><br><div id="output" class="cName"></div><div class="wrapper"><div id="bd"><div id="container" class="masonry">';
-    tHTML=tHTML+b.join("")+'</div></div></div><script src="'+location.protocol+'//dl.dropbox.com/u/4013937/jquery.min.js"></script></body></html>';
+    tHTML=tHTML+b.join("")+'</div></div></div><script src="https://rawgit.com/inDream/DownAlbum/master/assets/jquery.min.js"></script></body></html>';
     var file = new File([tHTML], 'photos.html', {type: 'text/html;charset=utf-8'});
     window.open(window.URL.createObjectURL(file), '_blank');
     break;
