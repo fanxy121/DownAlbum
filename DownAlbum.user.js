@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name          DownAlbum
 // @author        indream
-// @version       0.19.5.1
+// @version       0.20.7.1a
 // @description   Download Facebook (Album & Video), Instagram, Pinterest, Twitter, Ask.fm, Weibo Album.
 // @namespace     DownAlbum
 // @updateURL     https://raw.githubusercontent.com/inDream/DownAlbum/master/DownAlbum.meta.js
@@ -44,7 +44,7 @@
 
 const base = 'https://www.instagram.com/';
 const phoneUA = 'Instagram 27.0.0.7.97 (iPhone7,2; iPhone OS 9_3_3; en_US; en-US; ' +
-  'scale=2.00; 750x1334) AppleWebKit/420+';
+  'scale=2.00; 1440x2560) AppleWebKit/420+';
 const loadedPosts = {};
 const profiles = {};
 let fbDtsg = '';
@@ -106,16 +106,23 @@ function request(url, opt = {}) {
 var dFAinit = function(){
   var href = location.href;
   var site = href.match(/(facebook|instagram|twitter|weibo)\.com|ask\.fm|pinterest/);
+  var isTwitter = href.indexOf('twitter.com') > 0;
   if (document.querySelector('#dFA') || !site) {
     return;
+  }
+  if (location.host.match(/instagram.com|facebook.com|twitter.com/)) {
+    var o = window.WebKitMutationObserver || window.MutationObserver;
+    if (o && !window.addedObserver) {
+      window.addedObserver = true;
+      var observer = new o(runLater);
+      observer.observe(document.body, {subtree: true, childList: true});
+      runLater();
+    }
   }
   var k, k2, klass;
   if (site[0] == 'instagram.com') {
     klass = qS('header section div span button, header section div button')
     if (!klass) {
-      if (location.href.indexOf('/p') > 0) {
-        runLater();
-      }
       return;
     }
     klass = klass.parentNode;
@@ -127,9 +134,8 @@ var dFAinit = function(){
   k2 = k.cloneNode();
   k.innerHTML = '<a id="dFA" class="navSubmenu">DownAlbum</a>';
   k2.innerHTML = '<a id="dFAsetup" class="navSubmenu">DownAlbum(Setup)</a>';
-  var t = qS('.uiContextualLayerPositionerFixed ul') || qS('.Dropdown ul') ||
-    qS('.gn_topmenulist.gn_topmenulist_set ul') || qS('.uiContextualLayer [role="menu"]') ||
-    qS('.me.dropdown .dropdown-menu') || qS('header section div');
+  var t = qS('.gn_topmenulist ul') || qS('.uiContextualLayer [role="menu"]') ||
+    qS('header section div') /* ig */ || (isTwitter && qS('[role="menu"]')) /* twitter */;
   if(t){
     t.appendChild(k); t.appendChild(k2);
     k.addEventListener("click", function(){
@@ -154,12 +160,13 @@ var dFAinit = function(){
     }
   }else if(href.indexOf('pinterest') > 0){
     if(!qS('#dfaButton')){
-      t = qS('.boardHeaderWrapper') || qS('h3, h4') ? qS('h3, h4').parentNode : null;
+      let search = qS('.SearchPage') ? qS('.SearchPage .gridCentered') : null;
+      t = qS('.boardHeaderWrapper') || search || (qS('h1') ? qS('h1').parentNode : null);
       if (!t) {
         return;
       }
-      t.innerHTML += '<button id="dfaButton">DownAlbum</button>' +
-        '<button id="dfaSetButton">DownAlbum(Setup)</button>';
+      t.innerHTML = '<button id="dfaButton">DownAlbum</button>' +
+        '<button id="dfaSetButton">DownAlbum(Setup)</button>' + t.innerHTML;
       qS('#dfaButton').addEventListener("click", function(){
         dFAcore();
       });
@@ -176,15 +183,6 @@ var dFAinit = function(){
       setTimeout(dFAinit, 300);
     }
   }
-  if (location.host.match(/instagram.com|facebook.com/)) {
-    var o = window.WebKitMutationObserver || window.MutationObserver;
-    if (o && !window.addedObserver) {
-      window.addedObserver = true;
-      var observer = new o(runLater);
-      observer.observe(document.body, {subtree: true, childList: true});
-      runLater();
-    }
-  }
 };
 function runLater() {
   clearTimeout(window.addLinkTimer);
@@ -198,16 +196,10 @@ function addLink() {
     if (location.href.indexOf('explore/') > 0) {
       return;
     }
-    var k = qSA('article>div:nth-of-type(1), header>div:nth-of-type(1)');
+    let k = qSA('article>div:nth-of-type(2), header>div:nth-of-type(1):not([role="button"])');
     for(var i = 0; i<k.length; i++){
       if (k[i].nextElementSibling) {
         _addLink(k[i], k[i].nextElementSibling);
-      }
-    }
-    var k = qSA('header');
-    for(var i = 0; i<k.length; i++){
-      if (!k[i].querySelector('time')) {
-        _addLink(k[i], k[i]);
       }
     }
   } else if (location.host.match(/facebook.com/)) {
@@ -219,12 +211,15 @@ async function _addLink(k, target) {
   var isProfile = (k.tagName == 'HEADER' || k.parentNode.tagName == 'HEADER');
   let username = null;
   if (isProfile) {
-    const u = k.parentNode.querySelector('h1, [title]:not(button)');
+    const u = k.parentNode.querySelector('h1, h2, span a');
     if (u) {
       if (u.parentNode.className === 'dLink') {
         return;
       }
       username = u.textContent;
+      if (!username || !username.length) {
+        return;
+      }
     }
   }
   var tParent = target.parentNode;
@@ -255,31 +250,36 @@ async function _addLink(k, target) {
     } else if (profiles[username] === undefined) {
       profiles[username] = null;
       try {
-        let r = await fetch(`https://www.instagram.com/${username}/`);
-        r = await r.text();
-        r = r.slice(r.indexOf('_sharedData'));
-        r = r.slice(r.indexOf('{'), r.indexOf('\n'));
-        const data = JSON.parse(r.slice(0, r.lastIndexOf('}') + 1));
-        const id = data.entry_data.ProfilePage[0].graphql.user.id;
+        let r = await fetch(`https://www.instagram.com/${username}/?__a=1`);
+        const id = (await r.json()).graphql.user.id;
         r = await request(`https://i.instagram.com/api/v1/users/${id}/info/`);
-        r = r.response;
         profiles[username] = {
           id,
-          src: r.user.hd_profile_pic_url_info.url
+          src: r.response.user.hd_profile_pic_url_info.url
         };
         src = profiles[username].src;
-      } catch (e) {}
+      } catch (e) {
+        console.error(e);
+        profiles[username] = null;
+      }
+    }
+    if (!profiles[username]) {
+      return;
     }
     const { id } = profiles[username];
     if (!k.querySelector(`.dStory[data-id="${id}"]`)) {
       const storyBtn = document.createElement('a');
       storyBtn.className = 'dStory';
-      storyBtn.style.maxWidth = '200px';
-      storyBtn.style.cursor = 'pointer';
+      storyBtn.style.cssText = 'max-width: 200px; cursor: pointer; display: block;';
       storyBtn.dataset.id = id;
-      storyBtn.textContent = 'Download Stories';
+      storyBtn.textContent = '📥 Stories';
       k.appendChild(storyBtn);
       storyBtn.addEventListener('click', () => loadStories(id));
+      const highlightBtn = document.createElement('a');
+      highlightBtn.style.cssText = 'max-width: 200px; cursor: pointer;';
+      highlightBtn.textContent = '📥 Highlights';
+      k.appendChild(highlightBtn);
+      highlightBtn.addEventListener('click', () => loadHighlights(id));
     }
   }
   const container = getParent(k, 'article') || k;
@@ -288,9 +288,8 @@ async function _addLink(k, target) {
     const link = document.createElement('div');
     link.className = 'dLink';
     link.style.maxWidth = '200px';
-    const title = '(provided by DownAlbum)';
     const items = [];
-    if (albumBtn) {
+    if (!isProfile && (albumBtn || t.getAttribute('poster'))) {
       const url = container.querySelector('a time').parentNode.getAttribute('href');
       if (loadedPosts[url] !== undefined) {
         if (loadedPosts[url] === 1) {
@@ -302,9 +301,12 @@ async function _addLink(k, target) {
         let r = await fetch(`${url}?__a=1`, { credentials: 'include' });
         r = await r.json();
         loadedPosts[url] = [];
-        r.graphql.shortcode_media.edge_sidecar_to_children.edges.forEach((e, i) => {
-          const { is_video, video_url, display_url } = e.node;
-          const img = `${is_video ? `${video_url}|` : ''}${parseFbSrc(display_url)}`;
+        const m = r.graphql.shortcode_media;
+        (albumBtn ? m.edge_sidecar_to_children.edges : [{ node: m }]).forEach((e, i) => {
+          const { dash_info, id, is_video, video_url, display_url } = e.node;
+          const dash = is_video && dash_info.is_dash_eligible ?
+            `${id}.mpd,${URL.createObjectURL(new Blob([dash_info.video_dash_manifest]))}|` : '';
+          const img = `${dash}${is_video ? `${video_url}|` : ''}${parseFbSrc(display_url)}`;
           loadedPosts[url].push(img);
           items.push(img);
         });
@@ -319,10 +321,14 @@ async function _addLink(k, target) {
     items.forEach((e, i) => {
       const s = e.split('|');
       const idx = items.length > 1 ? `#${i + 1} `: '';
-      html += s.length > 1 ? `<a href="${s.shift()}" download title="${title}"\
+      if (s.length > 2) {
+        const [name, url] = s.shift().split(',');
+        html += `<a href="${url}" download="${name}" target="_blank"\
+        >Download ${idx}Video (Dash)</a>`;
+      }
+      html += s.length > 1 ? `<a href="${s.shift()}" target="_blank"\
         >Download ${idx}Video</a>` : '';
-      html += `<a href="${s.shift()}" download title="${title}"\
-        >Download ${idx}Photo</a>`;
+      html += `<a href="${s.shift()}" target="_blank">Download ${idx}Photo</a>`;
     });
     link.innerHTML = html;
     if (isProfile) {
@@ -338,33 +344,30 @@ async function _addLink(k, target) {
     }
   }
 }
-async function loadStories(id) {
+async function loadStories(id, highlightId = '') {
   const hash = '61e453c4b7d667c6294e71c57afa6e63';
   const variables = `{"reel_ids":["${id}"],"tag_names":[],` +
-      `"location_ids":[],"highlight_reel_ids":[],"precomposed_overlay":false,` +
-      `"show_story_header_follow_button":false}`;
-  const options = {
-    credentials: 'include',
-    headers: {
-      'X-Requested-With': 'XMLHttpRequest',
-      'X-Instagram-GIS': md5(rhx_gis + ':' + variables),
-    },
-  };
+      `"location_ids":[],"highlight_reel_ids":[${highlightId}],`+
+      `"precomposed_overlay":false,"show_story_header_follow_button":false}`;
   try {
     const url = `${base}graphql/query/?query_hash=${hash}&variables=${variables}`;
-    let r = await fetch(url, options);
+    let r = await fetch(url, { credentials: 'include' });
     r = await r.json();
     if (!r.data.reels_media || !r.data.reels_media.length) {
-      throw Error('No stories loaded');
+      alert('No stories loaded');
+      return;
     }
     openWindow();
-    const { items, latest_reel_media: last, user } = r.data.reels_media[0];
+    const type = highlightId !== '' ? 'GraphHighlightReel' : 'GraphReel';
+    const { items, latest_reel_media: last, owner, user } =
+      r.data.reels_media.filter(e => e.__typename === type)[0];
+    const lastTime = last ? last : items[0].taken_at_timestamp;
     const photodata = {
       aDes: '',
       aName: 'Stories',
-      aAuth: user.username,
-      aLink: `${base}${user.username}`,
-      aTime: last ? 'Last Update: ' + parseTime(last) : '',
+      aAuth: (user || owner).username,
+      aLink: `${base}${(user || owner).username}`,
+      aTime: lastTime ? 'Last Update: ' + parseTime(lastTime) : '',
       newL: true,
       newLayout: true,
       photos: [],
@@ -372,11 +375,14 @@ async function loadStories(id) {
       type: 'Stories',
     };
     items.forEach((e, i) => {
-      photodata.photos.push({ url: e.display_url, href: '' });
+      const p = { url: e.display_url, href: '',
+        date: parseTime(e.taken_at_timestamp) };
       if (e.video_resources) {
+        p.videoIdx = photodata.videos.length;
         const { src } = e.video_resources[e.video_resources.length - 1];
         photodata.videos.push({ url: src, thumb: e.display_url });
       }
+      photodata.photos.push(p);
     });
     if (isWinReady) {
       sendRequest({ type:'export', data: photodata });
@@ -386,6 +392,35 @@ async function loadStories(id) {
   } catch (e) {
     console.error(e);
     alert('Cannot load stories');
+  }
+}
+async function loadHighlights(id) {
+  const hash = 'ad99dd9d3646cc3c0dda65debcd266a7';
+  const variables = `{"user_id":"${id}","include_highlight_reels":true}`;
+  try {
+    const url = `${base}graphql/query/?query_hash=${hash}&variables=${variables}`;
+    let r = await fetch(url, { credentials: 'include' });
+    r = await r.json();
+    const list = r.data.user.edge_highlight_reels.edges;
+    if (!list || !list.length) {
+      alert('No highlights loaded');
+      return;
+    }
+    createDialog();
+    g.statusEle = qS('.daCounter');
+    g.statusEle.innerHTML = '<p>Select highlight to download:</p>'
+    for (let i = 0; i < list.length; i++) {
+      const n = list[i].node;
+      const a = document.createElement('a');
+      g.statusEle.appendChild(a);
+      a.style.cssText = 'width: 100px; display: inline-block;';
+      a.innerHTML = `<img src="${n.cover_media_cropped_thumbnail.url}" ` +
+        `style="width:100%;" /><br>${n.title}`;
+      a.addEventListener('click', () => loadStories(id, `"${n.id}"`));
+    }
+  } catch (e) {
+    console.error(e);
+    alert('Cannot load highlights');
   }
 }
 function getFbEnv() {
@@ -530,8 +565,8 @@ function padZero(str, len) {
   }
   return str;
 }
-function parseTime(t){
-  var d = new Date(t * 1000);
+function parseTime(t, isDate){
+  var d = isDate ? t : new Date(t * 1000);
   return d.getFullYear() + '-' + padZero(d.getMonth() + 1, 2) + '-' +
     padZero(d.getDate(), 2) + ' ' + padZero(d.getHours(), 2) + ':' +
     padZero(d.getMinutes(), 2) + ':' + padZero(d.getSeconds(), 2);
@@ -645,6 +680,7 @@ function createDialog() {
     #daHeader {font-size: 1.5rem; font-weight: 700; background: #FFF; \
     padding: 1rem 0.5rem; color: rgba(0,0,0,.85); \
     border-bottom: 1px solid rgba(34,36,38,.15);} \
+    .daCounter {max-height: 300px;overflow-y: auto;} \
     #daContent {font-size: 1.2em; line-height: 1.4; padding: .5rem;} \
     #daContainer a {cursor: pointer;border: 1px solid black;padding: 10px; \
       display: block;} \
@@ -668,7 +704,6 @@ function closeDialog() {
   document.body.removeChild(qS('#daContainer'));
 }
 function output(){
-  g.photodata.dTime = (new Date()).toLocaleString();
   if(location.href.match(/.*facebook.com/)){
     document.title = document.title.match(/(?:.*\|\|)*(.*)/)[1];
   }
@@ -704,6 +739,7 @@ function handleFbAjax(fbid) {
     photos[i].tag = d.tag;
     photos[i].date = d.date;
     if (d.video) {
+      photos[i].videoIdx = g.photodata.videos.length;
       g.photodata.videos.push({
         url: d.video
       });
@@ -851,7 +887,14 @@ function fbAjax(){
               s = !s ? '' : s.innerHTML.match(/<br>|<wbr>/) ?
                 s.outerHTML.replace(/'/g,'&quot;') : s.textContent;
               var tag = b.querySelector('.tagBox');
-              pid = getFbid(a.parentNode.href);
+              pid = a.parentNode.href.match(/permalink|story_fbid/) ? null :
+                getFbid(a.parentNode.href);
+              if (!pid) {
+                var btn = box[kk].querySelector('.sendButton');
+                if (btn) {
+                  pid = parseQuery(btn.href).id;
+                }
+              }
               initDataLoaded(pid);
               g.dataLoaded[pid].tag = !tag ? '' : b.outerHTML;
               g.dataLoaded[pid].title = s;
@@ -985,7 +1028,11 @@ function getPhotos(){
     && location.href.match('search')));
   if(g.ajaxFailed&&g.mode!=2&&scrollEle){scrollTo(0, document.body.clientHeight);setTimeout(getPhotos,2000);return;}//g.start=3;
   var i, photodata = g.photodata, testNeeded = 0, ajaxNeeded = 0;
-  var elms = g.elms || qS('#album_photos_pagelet') || qS('#album_pagelet') || qS('#static_set_pagelet') || qS('#pagelet_photos_stream') || qS('#group_photoset') || qS('#initial_browse_result') || qS('#content');
+  var elms = g.elms || qS('#album_photos_pagelet') || qS('#album_pagelet') ||
+    qS('#static_set_pagelet') || qS('#pagelet_photos_stream') ||
+    qS('#group_photoset') || qS('#initial_browse_result') ||
+    qS('#pagelet_timeline_medley_photos') || qS('#content_container') ||
+    qS('#content');
   var grid = qSA('#fbTimelinePhotosFlexgrid, .fbStarGrid, ' +
     '#pages_video_hub_all_videos_pagelet');
   var selector = 'a[rel="theater"]';
@@ -1154,89 +1201,43 @@ function getPhotos(){
   }else{output();}
 }
 function getFbMessagesPhotos() {
-  if (!g.offset) {
-    g.ajaxRetry = {};
-    g.offset = 0;
+  if (!g.threadId) {
+    g.ajax = null;
     g.photodata.aName = getText('.fb_content [role="main"] h2');
-    g.photodata.aDes = '';
-    getFbDtsg();
-    var headers = qSA('[role="gridcell"], [id^="row_header_id_user:"]');
-    var rows = [];
-    for (var i = 0; i < headers.length; i++) {
-      rows.push({e: headers[i], len: headers[i].parentNode.className.length});
+    if (qS('a[uid]')) {
+      g.threadId = qS('a[uid]').getAttribute('uid');
+    } else if (location.href.match(/messages\/t\/(\d+)/)) {
+      g.threadId = location.href.match(/messages\/t\/(\d+)/)[1];
+    } else {
+      alert('Cannot get message thread id.');
+      return;
     }
-    rows.sort(function(a, b) {
-      return a.len > b.len ? -1 : a.len === b.len ? 0 : 1;
-    });
-    g.threadId = rows[0].e.id.split(':')[1];
   }
-  var url = location.origin + '/ajax/messaging/attachments/sharedphotos.php';
-  var data = 'thread_id='+g.threadId+'&offset='+g.offset+'&limit=30&__user='+g.Env.user+'&__a=1&__req=7&fb_dtsg='+g.fb_dtsg;
+  var variables = JSON.stringify({ id: g.threadId, first: 30, after: g.ajax });
+  var url = location.origin + '/webgraphql/query/?query_id=515216185516880&variables='+variables;
+  var data = '__user='+g.Env.user+'&__a=1&__req=7&fb_dtsg='+g.fb_dtsg;
   var xhr = new XMLHttpRequest();
   xhr.onload = function(){
-    var elms = g.elms.length ? g.elms : [];
-    var payload = JSON.parse(this.response.slice(9)).payload;
-    if(payload.imagesData){
-      elms = elms.concat(payload.imagesData);
-      if(elms.length){
-        g.elms = elms;
-        if(payload.moreImagesToLoad){
-          g.offset += 30;
-          getFbMessagesPhotos();
-        }else{
-          fbAjaxAttachment();
-        }
-      }else{
-        alert('No photo attachments found.');
-      }
+    var payload = extractJSON(this.response).payload[g.threadId];
+    if (!payload.message_shared_media) {
+      alert('Cannot get message media.');
+      return;
+    }
+    for (var i = 0; i < payload.message_shared_media.edges.length; i++) {
+      var n = payload.message_shared_media.edges[i].node;
+      g.photodata.photos.push({ href: '', url: n.image2.uri });
+    }
+    g.statusEle.textContent = 'Loading album... (' + g.photodata.photos.length + ')';
+    if (payload.message_shared_media.page_info.has_next_page) {
+      g.ajax = payload.message_shared_media.page_info.end_cursor;
+      getFbMessagesPhotos();
+    } else if (g.photodata.photos.length) {
+      output();
     }
   };
   xhr.open('POST', url);
   xhr.setRequestHeader("Content-type", "application/x-www-form-urlencoded");
   xhr.send(data);
-}
-function fbAjaxAttachment(){
-  var len = g.elms.length, i = g.ajaxLoaded;
-  if(len && len > g.photodata.photos.length){
-    var elms = g.elms[i];
-    var fbid = elms.fbid;
-    if(!g.ajaxRetry[fbid]){
-      g.ajaxRetry[fbid] = 0;
-    }
-    if(!g.dataLoaded[fbid] && g.ajaxRetry[fbid]<3){
-      g.ajaxRetry[fbid]++;
-      var xhr = new XMLHttpRequest();
-      xhr.onload = function(){
-        var output = JSON.parse(JSON.parse(this.response.slice(9)).payload.output);
-        var images = output[g.threadId].message_images.edges
-        for(var i = 0; i < images.length; i++){
-          g.dataLoaded[images[i].node.id] = 1;
-          g.photodata.photos.push({
-            href: '',
-            url: images[i].node.image2.uri
-          });
-        }
-        g.ajaxLoaded++;
-        fbAjaxAttachment();
-      };
-      xhr.open('POST', location.origin + '/ajax/graphql/query/');
-      xhr.setRequestHeader("Content-type", "application/x-www-form-urlencoded");
-      var after = i > 0 ? ('&params[after]=' + g.elms[i - 1].fbid) : '';
-      var data = 'queryName=MESSAGE_THREAD_IMAGES_FIRST'+after+'&params[first]=19&params[thread_id]='+g.threadId+'&__user='+g.Env.user+'&__a=1&__req=7&fb_dtsg='+g.fb_dtsg;
-      xhr.send(data);
-    }else{
-      if(g.ajaxRetry[fbid] > 3){
-        g.photodata.photos.push({
-          href: '',
-          url: elms.url
-        });
-      }
-      g.ajaxLoaded++;
-      fbAjaxAttachment();
-    }
-  }else if(g.photodata.photos.length){
-    output();
-  }
 }
 function getQL(type, target, key) {
   if (g.pageType === 'album') {
@@ -1709,43 +1710,6 @@ function fbAutoLoad(elms){
   },10000);
   xhr.send();
 }
-function instaAjax(){
-  var xhr = new XMLHttpRequest();
-  xhr.onload = function() {
-    var total=g.total, photodata=g.photodata,
-    res=JSON.parse(this.response),elms=res.items;
-    if(elms[0].id.indexOf('_')<0)elms=elms[3];
-    g.ajax=res.more_available?elms[elms.length-1].id:null;
-    for(var i=0;i<elms.length;i++){
-      var url = parseFbSrc(elms[i].images.standard_resolution.url);
-      var c = elms[i].comments, cList = [c.count];
-      for(var k=0; k<c.data.length; k++){
-        var p = c.data[k];if(p){
-        cList.push({name: p.from.full_name || p.from.username, url: 'http://instagram.com/'+p.from.username, text: p.text, date: parseTime(p.created_time), id: elms[i].link});}
-      }
-      if(elms[i].videos){
-        photodata.videos.push({
-          url: elms[i].videos.standard_resolution.url,
-          thumb: url
-        });
-      }
-      photodata.photos.push({
-        title: elms[i].caption?elms[i].caption.text:'',
-        url: url,
-        href: elms[i].link,
-        date: elms[i].created_time?parseTime(elms[i].created_time):'',
-        comments: c.count?cList:''
-      });
-    }
-    log('Loaded '+photodata.photos.length+' of '+total+' photos.');
-    g.statusEle.textContent='Loaded '+g.photodata.photos.length+' / '+total;
-    document.title="("+g.photodata.photos.length+"/"+total+") ||"+g.photodata.aName;
-    if(qS('#stopAjaxCkb')&&qS('#stopAjaxCkb').checked){output();}
-    else if(total>photodata.photos.length&&g.ajax){instaAjax();}else{output();}
-  };
-  xhr.open("GET", 'https://www.instagram.com/'+g.Env.user.username+'/media/?max_id='+g.ajax);
-  xhr.send();
-}
 function _instaQueryAdd(elms) {
   for (var i = 0; i < elms.length; i++) {
     var feed = elms[i];
@@ -1771,12 +1735,6 @@ function _instaQueryAdd(elms) {
     for (var j = 0; j < edges.length; j++) {
       var n = !isAlbum ? edges[j] : edges[j].node;
       url = parseFbSrc(n.display_url || n.display_src);
-      if (n.is_video) {
-        g.photodata.videos.push({
-          url: n.video_url,
-          thumb: url
-        });
-      }
       var caption = feed.edge_media_to_caption;
       if (caption) {
         caption = caption.edges.length ? caption.edges[0].node.text : '';
@@ -1798,14 +1756,22 @@ function _instaQueryAdd(elms) {
         tagHtml += '</div></div>';
       }
       var date = feed.date || feed.taken_at_timestamp;
-      g.photodata.photos.push({
+      const p = {
         title: j === 0 && caption ? caption : (feed.caption || ''),
         url: url,
         href: `https://www.instagram.com/p/${feed.shortcode}/`,
         date: date ? parseTime(date) : '',
         comments: c.count && j === 0 && cList.length > 1 ? cList : '',
         tag: tagHtml
-      });
+      };
+      if (n.is_video) {
+        p.videoIdx = g.photodata.videos.length;
+        g.photodata.videos.push({
+          url: n.video_url,
+          thumb: url
+        });
+      }
+      g.photodata.photos.push(p);
     }
   }
 }
@@ -1818,11 +1784,16 @@ function _instaQueryProcess(elms) {
     if (!elms[i] || (g.downloaded && g.downloaded[feed.id])) {
       continue;
     }
-    if (feed.__typename === 'GraphSidecar' || feed.__typename === 'GraphVideo') {
+    var isAlbum = feed.__typename === 'GraphSidecar';
+    var isVideo = feed.__typename === 'GraphVideo';
+    if (isAlbum || isVideo) {
+      var albumIncomplete = isAlbum && (!feed.edge_sidecar_to_children ||
+        feed.edge_sidecar_to_children.edges
+        .filter(e => e.node.is_video && !e.node.video_url).length);
       if (g.skipAlbum) {
         elms[i] = null;
         continue;
-      } else if (!feed.edge_sidecar_to_children && !feed.video_url) {
+      } else if (albumIncomplete || (isVideo && !feed.video_url)) {
         var xhr = new XMLHttpRequest();
         xhr.onload = function() {
           try {
@@ -1889,7 +1860,7 @@ function instaQuery() {
   xhr.send();
 }
 function getInstagramQueryId() {
-  const s = qS('script[src*="ProfilePageContainer"], script[src*="Commons"]');
+  const s = qS('script[src*="ProfilePageContainer"]');
   const xhr = new XMLHttpRequest();
   xhr.onload = function() {
     const src = this.response.replace(/void 0/g, '');
@@ -1925,65 +1896,86 @@ function getInstagram() {
     _instaQueryProcess(res.edges);
   }
 }
-function getTwitter(){
-  var xhr = new XMLHttpRequest();
-  xhr.onload = function() {
-    var r = JSON.parse(this.responseText);
-    g.ajax = r.min_position || '';
-    var doc = getDOM(r.items_html);
-    var elms = doc.querySelectorAll('.content');
-    var photodata = g.photodata;
-    var i, j, link, url, title, date;
-    for(i = 0; i < elms.length; i++){
-      link = elms[i].querySelectorAll('.js-adaptive-photo, [data-image-url]');
-      if (!link.length) {
-        link = elms[i].querySelectorAll('img[src*=media]');
-      }
-      for(j = 0; j < link.length; j++){
-        url = link[j].getAttribute('data-image-url') || link[j].src;
-        if (!url) {
-          continue;
-        }
-        title = elms[i].querySelector('.tweet-text').innerHTML || '';
-        title = title.replace(/href="\//g, 'href="https://twitter.com/');
-        date = elms[i].querySelector('._timestamp, .js-short-timestamp');
-        photodata.photos.push({
-          title: title,
-          url: url.replace(':large', '') + ':orig',
-          href: 'https://twitter.com' + date.parentNode.getAttribute('href'),
-          date: date ? parseTime(+date.getAttribute('data-time')) : '' 
+async function getTwitter() {
+  let url = 'https://api.twitter.com/2/timeline/media/' + g.id +
+    '.json?skip_status=1&tweet_mode=extended&include_entities=false&count=20' +
+    (g.ajax ? ('&cursor=' + encodeURIComponent(g.ajax)) : '');
+  let r = await fetch(url, { credentials: 'include', headers: {
+    'authorization': 'Bearer ' + g.token,
+    'x-csrf-token': g.csrf
+  }});
+  r = await r.json();
+  const photodata = g.photodata;
+  let keys = Object.keys(r.globalObjects.tweets);
+  keys.sort((a, b) => (+b - +a));
+  if (g.photodata.aAuth === null) {
+    const user = r.globalObjects.users[g.id];
+    photodata.aName = user.screen_name;
+    photodata.aAuth = user.name;
+    photodata.aDes = user.description;
+    g.total = user.media_count;
+    g.aTime = parseTime(new Date(r.globalObjects.tweets[keys[0]].created_at), true);
+  }
+  for (let k = 0; k < keys.length; k++) {
+    const t = r.globalObjects.tweets[keys[k]];
+    if (!t.extended_entities) {
+      continue;
+    }
+    const media = t.extended_entities.media;
+    for (let i = 0; i < media.length; i++) {
+      const m = media[i];
+      const p = {
+        title: i === 0 ? t.text : '',
+        url: m.media_url_https + '?name=orig',
+        href: 'https://' + m.display_url,
+        date: parseTime(new Date(t.created_at), true)
+      };
+      if (m.type === 'video') {
+        p.videoIdx = photodata.videos.length;
+        m.video_info.variants.sort((a, b) => ((b.bitrate || 0) - (a.bitrate || 0)));
+        photodata.videos.push({
+          url: m.video_info.variants[0].url,
+          thumb: m.media_url_https
         });
-        if (!r.min_position) {
-          var max_id = (date.parentNode.getAttribute('href') || '')
-            .match(/status\/(\d+)/);
-          if(max_id){
-            g.ajax = max_id[1];
-          }
-        }
       }
+      photodata.photos.push(p);
     }
-    log("Loaded", photodata.photos.length);
-    document.title = photodata.photos.length + g.total + ' || ' + g.photodata.aName;
-    g.statusEle.textContent = g.photodata.photos.length + g.total;
-    if (qS('#stopAjaxCkb') && qS('#stopAjaxCkb').checked) {
-      output();
-    } else if (r.has_more_items && g.ajax && !g.ajaxStop) {
-      setTimeout(getTwitter, 1000);
-    } else {
-      output();
-    }
-  };
-  var url = 'https://twitter.com/i/profiles/show/'+g.photodata.aName+'/media_timeline?include_available_features=1&include_entities=1' + (g.ajax ? ('&max_position='+g.ajax) : '');
-  xhr.open('GET', url);
-  xhr.send();
+  }
+  const e = r.timeline.instructions[0].addEntries.entries;
+  if (keys.length === 20 && e[e.length - 1].entryId.indexOf('cursor-bottom') > -1) {
+    const cursor = e[e.length - 1].content.operation.cursor.value;
+    g.ajax = g.ajax === cursor ? false : cursor;
+  } else {
+    g.ajax = false;
+  }
+  document.title = `${photodata.photos.length}/${g.total} || ${photodata.aName}`;
+  g.statusEle.textContent = photodata.photos.length + '/' + g.total;
+  if (qS('#stopAjaxCkb') && qS('#stopAjaxCkb').checked) {
+    output();
+  } else if (g.ajax) {
+    setTimeout(getTwitter, 1000);
+  } else {
+    output();
+  }
+}
+async function getTwitterInit() {
+  let r = await fetch(qS('link[href*="/main"]').getAttribute('href'));
+  r = await r.text();
+  r = r.match(/="([\w\d]+%3D[\w\d]+)"/g);
+  if (!r) {
+    alert('Cannot get auth token');
+    return;
+  }
+  g.token = r[0].slice(2, -1);
+  getTwitter();
 }
 function getWeibo() {
   GM_xmlhttpRequest({
     method: "GET",
     url: `https://www.weibo.com/p/aj/album/loading?owner_uid=${g.uId}&page_id=${g.pageId}&page=${g.ajaxPage}&ajax_call=1&since_id=${g.ajax}`,
-    onload: function() {
+    onload: function(res) {
       g.ajaxPage++;
-      var html = getDOM(JSON.parse(this.response).data);
+      var html = getDOM(JSON.parse(res.response).data);
       var loading = html.querySelector('[node-type="loading"]').getAttribute('action-data');
       g.ajax = parseQuery(loading).since_id;
       var links = html.querySelectorAll("a.ph_ar_box");
@@ -2015,9 +2007,9 @@ function getWeiboAlbum() {
   GM_xmlhttpRequest({
     method: "GET",
     url: `https://photo.weibo.com/albums/get_all?uid=${g.uId}&page=1&count=20`,
-    onload: function() {
+    onload: function(res) {
       try {
-        const list = JSON.parse(this.response).data.album_list;
+        const list = JSON.parse(res.response).data.album_list;
         g.statusEle.innerHTML = '<p>Select album to download:</p>'
         for (let i = 0; i < list.length; i++) {
           const a = document.createElement('a');
@@ -2044,19 +2036,24 @@ function loadWeiboAlbum() {
     method: "GET",
     url: `https://photo.weibo.com/photos/get_all?uid=${g.uId}&` +
       `album_id=${g.aId}&count=30&page=${g.ajaxPage}&type=3`,
-    onload: function() {
+    onload: function(res) {
       g.ajaxPage++;
+      let ended = false;
       try {
-        const list = JSON.parse(this.response).data.photo_list;
+        const list = JSON.parse(res.response).data.photo_list;
+        ended = list.length === 0;
+        if (ended) {
+          alert('Reached end of album due to author setting.');
+        }
         let lastCaption = '';
         for (let i = 0; i < list.length; i++) {
           const e = list[i];
-          const url = `https://${e.pic_host.replace('http://', '')}/large/${e.pic_name}`;
+          const url = `${e.pic_host}/large/${e.pic_name}`;
           if (!g.downloaded[url]) { g.downloaded[url] = 1; } else { continue; }
           g.photodata.photos.push({
             title: e.caption == lastCaption ? '' : e.caption,
             url: url,
-            href: `http://photo.weibo.com/${g.uId}/talbum/detail/photo_id/${e.photo_id}`,
+            href: `https://photo.weibo.com/${g.uId}/talbum/detail/photo_id/${e.photo_id}`,
             date: parseTime(e.timestamp)
           });
           lastCaption = e.caption;
@@ -2065,7 +2062,7 @@ function loadWeiboAlbum() {
         log(`Loaded ${count} photos.`);
         document.title=`(${count}/${g.total}) ||${g.photodata.aName}`;
         g.statusEle.textContent = `Loaded ${count}/${g.total}`;
-        if (qS('#stopAjaxCkb') && qS('#stopAjaxCkb').checked) {
+        if (qS('#stopAjaxCkb') && qS('#stopAjaxCkb').checked || ended) {
           output();
         } else if (count < g.total) {
           setTimeout(loadWeiboAlbum, 2000);
@@ -2110,92 +2107,98 @@ function getPinterest(){
     return;
   }
   g.source = board ? encodeURIComponent(location.pathname) : '/';
-  var xhr = new XMLHttpRequest();
-  xhr.onload = function() {
-    var html = this.response;
-    var doc = getDOM(html).querySelector('#initial-state');
-    if (!doc) {
-      alert('Cannot load initial state');
+  var s = qS('#initial-state') ? extractJSON(getText('#initial-state')) : null;
+  if (!s) {
+    var doc = qSA('script');
+    for (var i = 0; i < doc.length; i++) {
+      var c = doc[i].textContent;
+      if (c.indexOf('__INITIAL_STATE__') > 0) {
+        s = extractJSON(c.replace(/\\\\\\"/g, '\'').replace(/\\"/g, '"'));
+        break;
+      }
+    }
+  }
+  if (!s || !s.ui || !s.ui.mainComponent) {
+    alert('Cannot load initial state');
+    return;
+  }
+  var type = s.ui.mainComponent.current;
+  var resources = s.resources.data;
+  while (resources && !resources.data) {
+    const key = Object.keys(resources).filter(k => k !== 'UserResource')[0];
+    resources = resources[key];
+  }
+  var r = resources && resources.data ? resources.data : null;
+  g.resource = type.replace(/Feed|Page/g, '') + 'FeedResource';
+  switch (type) {
+    case 'HomePage':
+      parsePinterest(r);
+      g.bookmarks = {
+        bookmarks: [resources.nextBookmark],
+        prependPartner: false,
+        prependUserNews: false,
+        prependExploreRep: null,
+        field_set_key: 'hf_grid'
+      };
+      g.resource = 'UserHomefeedResource';
+      break;
+    case 'BoardPage':
+      g.bookmarks = {
+        board_id: r.id,
+        board_url: r.url,
+        field_set_key: 'react_grid_pin',
+        layout: 'default',
+        page_size: 25
+      };
+      break;
+    case 'BoardSectionPage':
+      g.bookmarks = {
+        section_id: r.id,
+        page_size: 25
+      };
+      g.resource = 'BoardSectionPinsResource';
+      g.photodata.aName += ' - ' + r.title;
+      break;
+    case 'DomainFeedPage':
+      g.bookmarks = {domain: board[2]};
+      break;
+    case 'ProfilePage':
+      switch (board[2]) {
+        case 'pins': 
+          g.bookmarks = {username: board[1], field_set_key: 'grid_item'};
+          g.resource = 'UserPinsResource';
+          break;
+        case 'likes':
+          g.bookmarks = {username: board[1], page_size: 25};
+          g.resource = 'UserLikesResource';
+          break;
+      }
+      break;
+    case 'SearchPage':
+      var query = location.search.slice(1).replace(/&/g, '=').split('=');
+      query = query[query.indexOf('q') + 1];
+      g.bookmarks = {query: query, scope: board[2]};
+      break;
+    case 'TopicFeedPage':
+      g.bookmarks = {interest: board[2]};
+      break;
+    case 'InterestFeedPage':
+      g.bookmarks = {query: board[2]};
+      break;
+    default:
+      alert('Download type not supported.');
       return;
+  }
+  if (type === 'SearchPage' || type === 'InterestFeedPage') {   
+    if (r.results) {
+      parsePinterest(r.results);
     }
-    var s = extractJSON(doc.textContent);
-    var type = s.ui.mainComponent.current;
-    var resources = s.resources.data;
-    while (resources && !resources.data) {
-      const key = Object.keys(resources).filter(k => k !== 'UserResource')[0];
-      resources = resources[key];
+    if (resources.nextBookmark) {
+      g.bookmarks.bookmarks = [resources.nextBookmark];
     }
-    var r = resources && resources.data ? resources.data : null;
-    g.resource = type.replace(/Feed|Page/g, '') + 'FeedResource';
-    switch (type) {
-      case 'HomePage':
-        parsePinterest(r);
-        g.bookmarks = {
-          bookmarks: [resources.nextBookmark],
-          prependPartner: false,
-          prependUserNews: false,
-          prependExploreRep: null,
-          field_set_key: 'grid_item_with_rec'
-        };
-        g.resource = 'UserHomefeedResource';
-        break;
-      case 'BoardPage':
-        g.bookmarks = {
-          board_id: r.id,
-          board_url: r.url,
-          field_set_key: 'react_grid_pin',
-          layout: 'default',
-          page_size: 25
-        };
-        break;
-      case 'BoardSectionPage':
-        g.bookmarks = {
-          section_id: r.id,
-          page_size: 25
-        };
-        g.resource = 'BoardSectionPinsResource';
-        g.photodata.aName += ' - ' + r.title;
-        break;
-      case 'DomainFeedPage':
-        g.bookmarks = {domain: board[2]};
-        break;
-      case 'ProfilePage':
-        switch (board[2]) {
-          case 'pins': 
-            g.bookmarks = {username: board[1], field_set_key: 'grid_item'};
-            g.resource = 'UserPinsResource';
-            break;
-          case 'likes':
-            g.bookmarks = {username: board[1], page_size: 25};
-            g.resource = 'UserLikesResource';
-            break;
-        }
-        break;
-      case 'SearchPage':
-        var query = location.search.slice(1).replace(/&/g, '=').split('=');
-        query = query[query.indexOf('q') + 1];
-        g.bookmarks = {query: query, scope: board[2]};
-        break;
-      case 'TopicFeedPage':
-        g.bookmarks = {interest: board[2]};
-        break;
-      case 'InterestFeedPage':
-        g.bookmarks = {query: board[2]};
-        break;
-    }
-    if (type === 'SearchPage' || type === 'InterestFeedPage') {   
-      if (r.results) {
-        parsePinterest(r.results);
-      }
-      if (resources.nextBookmark) {
-        g.bookmarks.bookmarks = [resources.nextBookmark];
-      }
-      g.resource = 'SearchResource';
-    }
-    getPinterest_sub();
-  };
-  xhr.open('GET', location.href);
-  xhr.send();
+    g.resource = 'SearchResource';
+  }
+  getPinterest_sub();
 }
 function getPinterest_sub(){
   var photodata = g.photodata;
@@ -2277,7 +2280,8 @@ function getAskFM() {
         title: title,
         url: url,
         href: 'https://ask.fm' + link.getAttribute('href'),
-        date: link.getAttribute('title')
+        date: link.getAttribute('title'),
+        videoIdx: video ? photodata.videos.length - 1 : undefined
       });
     }
     console.log('Loaded ' + photodata.photos.length + ' photos.');
@@ -2321,10 +2325,11 @@ var dFAcore = function(setup, bypass) {
   g.statusEle = qS('.daCounter');
   if(location.host.match(/.*facebook.com/)){
     if(qS('.fbPhotoAlbumTitle')||qS('.fbxPhotoSetPageHeader')){
-    aName=getText('.fbPhotoAlbumTitle')||getText("h2")||document.title;
+    aName = getText('.fbPhotoAlbumTitle') || getText("h2") ||
+      getText('span[role="heading"][aria-level="3"]:only-child') || document.title;
     aAuth=getText('#fb-timeline-cover-name')||getText("h2")||getText('.fbStickyHeaderBreadcrumb .uiButtonText')||getText(".fbxPhotoSetPageHeaderByline a");
     if(!aAuth){aName=getText('.fbPhotoAlbumTitle'); aAuth=getText('h2');}
-    aDes=getText('.fbPhotoCaptionText',1);
+    aDes = getText('.fbPhotoCaptionText', 1) || getText('span[role="heading"][aria-level="4"]');
     try{aTime=qS('#globalContainer abbr').title;
     var aLoc=qS('.fbPhotoAlbumActionList').lastChild;
     if((!aLoc.tagName||aLoc.tagName!='SPAN')&&(!aLoc.childNodes.length||(aLoc.childNodes.length&&aLoc.childNodes[0].tagName!='IMG'))){aLoc=aLoc.outerHTML?" @ "+aLoc.outerHTML:aLoc.textContent;aTime=aTime+aLoc;}}catch(e){};
@@ -2386,6 +2391,7 @@ var dFAcore = function(setup, bypass) {
       g.isVideo = location.href.match(/\/videos\/|set=v/);
       g.isPageVideo = g.isPage && g.isVideo;
       if (location.href.match('messages')) {
+        g.threadId = 0;
         getFbMessagesPhotos();
       } else {
         getPhotos();
@@ -2398,6 +2404,12 @@ var dFAcore = function(setup, bypass) {
       return alert('Please go to profile page.');
     }
     var xhr = new XMLHttpRequest();
+    xhr.onreadystatechange = function() {
+      if (this.readyState === 4 && this.status === 429) {
+        g.rateLimited = 1;
+        alert('Rate limit reached. Please try again later.');
+      }
+    };
     xhr.onload = function() {
       try {
         g.Env = getSharedData(this.response);
@@ -2410,7 +2422,15 @@ var dFAcore = function(setup, bypass) {
           alert('Need to reload for required variable.');
           return location.reload();
         }
-      } catch(e) {alert('Cannot load required variable!');} 
+      } catch(e) {
+        if (g.rateLimited) {
+          g.rateLimited = 0;
+        } else {
+          console.error(e);
+          alert('Cannot load required variable!');
+        }
+        return;
+      }
       g.isTagged = location.href.indexOf('/tagged/') > 0;
       g.Env.media = g.isTagged ? { count: 0, edges: [] } :
         g.Env.user.edge_owner_to_timeline_media;
@@ -2438,21 +2458,22 @@ var dFAcore = function(setup, bypass) {
     xhr.open('GET', location.href);
     xhr.send();
   }else if(location.host.match(/twitter.com/)){
-    g.id = qS('.ProfileAvatar img').getAttribute('src').match(/\d+/);
+    g.csrf = document.cookie.split(';').filter(s => s.indexOf('ct0') > -1)[0].split('=')[1];
+    g.id = qS('img[src*="profile_banners"]') ?
+      qS('img[src*="profile_banners"]').getAttribute('src') :
+      qS('[data-testid$="follow"]').dataset.testid;
+    g.id = g.id.match(/\d+/)[0];
     g.ajax = '';
-    var name = qS('h1 a');
-    var aTime = qS('.tweet-timestamp');
-    var total = getText('.PhotoRail-headingWithCount').replace(',', '').match(/\d+/);
-    g.total = total ? ('/' + total[0]) : '';
     g.photodata = {
-      aName: name.getAttribute('href').slice(1),
-      aAuth: name.textContent,
+      aAuth: null,
+      aDes: '',
       aLink: location.href,
-      aTime: aTime ? aTime.getAttribute('data-original-title') : "",
+      aName: '',
+      aTime: '',
       photos: [],
-      aDes: getText('.ProfileHeaderCard-bio', true)
+      videos: []
     };
-    getTwitter();
+    getTwitterInit();
   }else if(location.host.match(/weibo.com/)){
     try{
       aName='微博配圖';
@@ -2537,6 +2558,7 @@ switch(request.type){
     log('Exported '+request.data.photos.length+' photos.');
     var a,b=[],c=request.data;
     c.aName=(c.aName)?c.aName:"Facebook";
+    c.dTime = (new Date()).toLocaleString();
     var d = c.photos,totalCount = d.length;
     for (var i=0;i<totalCount;i++) {
       if(d[i]){
@@ -2565,6 +2587,8 @@ switch(request.type){
         commentInd='<a title="Click to view comments" rel="comments"><i class="tagArrow commentInd"></i></a>';
       }
       if(d[i].date){dateInd='<div class="dateInd"><span>'+d[i].date+'</span> <i class="tagArrow dateInd"></i></div>';}
+      var videoInd = d[i].videoIdx !== undefined ?
+        `<a class="videoInd" href="${c.videos[d[i].videoIdx].url}" target="_blank">🎥</a>` : ''; 
       var $t = [];
       var test = false;
       var test2 = false;
@@ -2590,10 +2614,12 @@ switch(request.type){
             .find('span').each(function() {$(this).replaceWith(this.childNodes);});
             title=$t.html();
           }catch(e){}
+        } else {
+          title = title.replace(/</g, '&lt;').replace(/>/g, '&gt;');
         }
       }catch(e){}
       title=title?'<div class="captions"><a class="captions" rel="captions"></a>'+title+'</div>':'<div class="captions"></div>';
-      var a = '<div rel="gallery" class="item'+(c.largeAlbum?' largeAlbum':'')+'" id="item'+i+'"><a'+href+'>'+(i*1+1)+'</a>'+commentInd+tagIndi+dateInd+'<a class="fancybox" rel="fancybox" href="'+d[i].url+'" target="_blank"><div class="crop"><div style="background-image: url('+d[i].url+');" class="img"><img src="'+d[i].url+'"></div></div></a>'+title+tag+comments+'</div>';
+      var a = '<div rel="gallery" class="item'+(c.largeAlbum?' largeAlbum':'')+'" id="item'+i+'"><a'+href+'>'+(i*1+1)+'</a>'+commentInd+tagIndi+videoInd+dateInd+'<a class="fancybox" rel="fancybox" href="'+d[i].url+'" target="_blank"><div class="crop"><div style="background-image: url('+d[i].url+');" class="img"><img src="'+d[i].url+'"></div></div></a>'+title+tag+comments+'</div>';
       b.push(a)}
     }
     const opt = { type: 'text/plain;charset=utf-8' };
@@ -2620,10 +2646,10 @@ switch(request.type){
       /*! fancyBox v2.1.3 fancyapps.com | fancyapps.com/fancybox/#license */\
       .fancybox-wrap,.fancybox-skin,.fancybox-outer,.fancybox-inner,.fancybox-image,.fancybox-wrap iframe,.fancybox-wrap object,.fancybox-nav,.fancybox-nav span,.fancybox-tmp{border:0;outline:none;vertical-align:top;margin:0;padding:0;}.fancybox-wrap{position:absolute;top:0;left:0;z-index:8020;}.fancybox-skin{position:relative;background:#f9f9f9;color:#444;text-shadow:none;-webkit-border-radius:4px;-moz-border-radius:4px;border-radius:4px;}.fancybox-opened{z-index:8030;}.fancybox-outer,.fancybox-inner{position:relative;}.fancybox-type-iframe .fancybox-inner{-webkit-overflow-scrolling:touch;}.fancybox-error{color:#444;font:14px/20px "Helvetica Neue",Helvetica,Arial,sans-serif;white-space:nowrap;margin:0;padding:15px;}.fancybox-image,.fancybox-iframe{display:block;width:100%;height:100%;}.fancybox-image{max-width:100%;max-height:100%;}#fancybox-loading,.fancybox-close,.fancybox-prev span,.fancybox-next span{background-image:url(data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAACwAAACYBAMAAABt8RZRAAAAMFBMVEUAAAABAQEiIiIjIyM4ODhMTExmZmaCgoKAgICfn5+5ubnW1tbt7e3////+/v4PDw+0IcHsAAAAEHRSTlP///////////////////8A4CNdGQAAAAlwSFlzAAALEwAACxMBAJqcGAAAAphJREFUSMftlE1oE0EUgNeCICru0YunaVNNSj3kbim5SqUECh7MxZMUvPQgKBQPggrSSy9SdFVC8Q8XwbNLpWhByRJQE5vsvimIFjxss14KmnTj/GR+Nrs9WH9OeZdlP96+nXnzvjG6qWHsDb+sVJK4AzSqfbgN767PXHimOMfu2zxCaPgujuGoWUA0RuyWjt0y4pHDGm43kQi7qvDF1xKf3lDYWZT4OJZ426Nfl1GO1nIk/tEgr9BEFpCnVRW4XSev87AEn8izJHHnIy1K9j5HnlMtgY98QCydJqPxjTi2gP4CnZT4MC2SJUXoOk/JIodqLHmJpatfHqRFCWMLnF+JbcdaRFmabcvtfHfPy82Pqs2HVlninKdadUw11tIauz+Y69ET+jGECyLdauiHdiB4yOgsvq/j8Bw8KqCRK7AWH4h99wAqAN/6p2po1gX/cXIGQwOZfz7I/xBvbW1VEzhijrT6cATNSzNn72ic4YDbcAvHcOQVe+32dBwsi8OB5wpHXkEc5YKm1M5XdfC+woFyZNi5KrGfZ4OzyX66InCHH3uJTqCYeorrTOCAjfdYXeCIjjeaYNNNxlNiJkPASym88566Aatc10asSAb6szvUEXQGXrD9rAvcXucr8dhKagL/5J9PAO1M6ZXaPG/rGrtPHkjsKEcyeFI1tq462DDVxYGL8k5aVbhrv5E32KR+hQFXKmNvGvrJ2941Rv1pU8fbrv/k5mUHl434VB11yFD5y4YZx+HQjae3pxWVo2mQMAfu/Dd3uDoJd8ahmOZOFr6kuYMsnE9xB+Xgc9IdEi5OukOzaynuIAcXUtwZ662kz50ptpCEO6Nc14E7fxEbiaDYSImuEaZhczc8iEEMYm/xe6btomu63L8A34zOysR2D/QAAAAASUVORK5CYII=);}#fancybox-loading{position:fixed;top:50%;left:50%;margin-top:-22px;margin-left:-22px;background-position:0 -108px;opacity:0.8;cursor:pointer;z-index:8060;}#fancybox-loading div{width:44px;height:44px;}.fancybox-close{position:absolute;top:-18px;right:-18px;width:36px;height:36px;cursor:pointer;z-index:8040;}.fancybox-nav{position:absolute;top:0;width:40%;height:100%;cursor:pointer;text-decoration:none;background:transparent url(data:image/png;base64,R0lGODlhAQABAIAAAP///wAAACH5BAEAAAAALAAAAAABAAEAAAICRAEAOw==);-webkit-tap-highlight-color:rgba(0,0,0,0);z-index:8040;}.fancybox-prev{left:-30%;}.fancybox-next{right:-30%;}.fancybox-nav span{position:absolute;top:50%;width:36px;height:34px;margin-top:-18px;cursor:pointer;z-index:8040;visibility:hidden;}.fancybox-prev span{left:10px;background-position:0 -36px;}.fancybox-next span{right:10px;background-position:0 -72px;}.fancybox-tmp{position:absolute;top:-99999px;left:-99999px;visibility:hidden;max-width:99999px;max-height:99999px;overflow:visible!important;}.fancybox-overlay{position:absolute;top:0;left:0;overflow:hidden;display:none;z-index:8010;background-image:url(data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAAGXRFWHRTb2Z0d2FyZQBBZG9iZSBJbWFnZVJlYWR5ccllPAAAAyJpVFh0WE1MOmNvbS5hZG9iZS54bXAAAAAAADw/eHBhY2tldCBiZWdpbj0i77u/IiBpZD0iVzVNME1wQ2VoaUh6cmVTek5UY3prYzlkIj8+IDx4OnhtcG1ldGEgeG1sbnM6eD0iYWRvYmU6bnM6bWV0YS8iIHg6eG1wdGs9IkFkb2JlIFhNUCBDb3JlIDUuMy1jMDExIDY2LjE0NTY2MSwgMjAxMi8wMi8wNi0xNDo1NjoyNyAgICAgICAgIj4gPHJkZjpSREYgeG1sbnM6cmRmPSJodHRwOi8vd3d3LnczLm9yZy8xOTk5LzAyLzIyLXJkZi1zeW50YXgtbnMjIj4gPHJkZjpEZXNjcmlwdGlvbiByZGY6YWJvdXQ9IiIgeG1sbnM6eG1wPSJodHRwOi8vbnMuYWRvYmUuY29tL3hhcC8xLjAvIiB4bWxuczp4bXBNTT0iaHR0cDovL25zLmFkb2JlLmNvbS94YXAvMS4wL21tLyIgeG1sbnM6c3RSZWY9Imh0dHA6Ly9ucy5hZG9iZS5jb20veGFwLzEuMC9zVHlwZS9SZXNvdXJjZVJlZiMiIHhtcDpDcmVhdG9yVG9vbD0iQWRvYmUgUGhvdG9zaG9wIENTNiAoV2luZG93cykiIHhtcE1NOkluc3RhbmNlSUQ9InhtcC5paWQ6QjY3NjM0OUJFNDc1MTFFMTk2RENERUM5RjI5NTIwMEQiIHhtcE1NOkRvY3VtZW50SUQ9InhtcC5kaWQ6QjY3NjM0OUNFNDc1MTFFMTk2RENERUM5RjI5NTIwMEQiPiA8eG1wTU06RGVyaXZlZEZyb20gc3RSZWY6aW5zdGFuY2VJRD0ieG1wLmlpZDpCNjc2MzQ5OUU0NzUxMUUxOTZEQ0RFQzlGMjk1MjAwRCIgc3RSZWY6ZG9jdW1lbnRJRD0ieG1wLmRpZDpCNjc2MzQ5QUU0NzUxMUUxOTZEQ0RFQzlGMjk1MjAwRCIvPiA8L3JkZjpEZXNjcmlwdGlvbj4gPC9yZGY6UkRGPiA8L3g6eG1wbWV0YT4gPD94cGFja2V0IGVuZD0iciI/PgbXtVkAAAAPSURBVHjaYhDg4dkAEGAAATEA2alCfCIAAAAASUVORK5CYII=);}.fancybox-overlay-fixed{position:fixed;bottom:0;right:0;}.fancybox-lock .fancybox-overlay{overflow:auto;overflow-y:scroll;}.fancybox-title{visibility:hidden;font:normal 13px/20px "Helvetica Neue",Helvetica,Arial,sans-serif;position:relative;text-shadow:none;z-index:8050;}.fancybox-title-float-wrap{position:absolute;bottom:0;right:50%;margin-bottom:-35px;z-index:8050;text-align:center;}.fancybox-title-float-wrap .child{display:inline-block;margin-right:-100%;background:rgba(0,0,0,0.8);-webkit-border-radius:15px;-moz-border-radius:15px;border-radius:15px;text-shadow:0 1px 2px #222;color:#FFF;font-weight:700;line-height:24px;white-space:nowrap;padding:2px 20px;}.fancybox-title-outside-wrap{position:relative;margin-top:10px;color:#fff;}.fancybox-title-inside-wrap{padding-top:10px;}.fancybox-title-over-wrap{position:absolute;bottom:0;left:0;color:#fff;background:rgba(0,0,0,.8);padding:10px;}.fancybox-inner,.fancybox-lock{overflow:hidden;}.fancybox-nav:hover span,.fancybox-opened .fancybox-title{visibility:visible;}\
       #fancybox-buttons{position:fixed;left:0;width:100%;z-index:8050;}#fancybox-buttons.top{top:10px;}#fancybox-buttons.bottom{bottom:10px;}#fancybox-buttons ul{display:block;width:400px;height:30px;list-style:none;margin:0 auto;padding:0;}#fancybox-buttons ul li{float:left;margin:0;padding:0;}#fancybox-buttons a{display:block;width:30px;height:30px;text-indent:-9999px;background-image:url(data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAFoAAABaBAMAAADKhlwxAAAAMFBMVEUAAAAAAAAeHh4uLi5FRUVXV1diYmJ3d3eLi4u8vLzh4eHz8/P29vb////+/v4PDw9Xwr0qAAAAEHRSTlP///////////////////8A4CNdGQAAAAlwSFlzAAALEwAACxMBAJqcGAAAAbVJREFUWMPtlktugzAQhnPNnqLnSRuJXaRGVFm3NmFdPMC+YHqA8NiWBHBdlPgxETRIVatWjIQ0Hn/8DL9lywsxJRYz/T10h+uxkefyiUw6xPROpw33xZHHmm4yTD9WKg2LRHhZqumwuNDW77tQkAwCRTepx2VU5y/LSEMlXkPEc3AUHTJCCESn+S4FOaZa/F7OPqm/bDLyGXCmoR8a4nLkKLrupymiwT/Thz3ZbbWDK9ZPnzxuoMeZ6sSTdKLpGthShnP68EaGIX3MGKGFrx1cAXbQDbR0ypY0TDRdX9JKWtD8RawiZqz8CtMbnR6k1zVsDfod046RP8jnbt6XM/1n6WoSzX2ryLlo+dsgXaRWsSxFV1aDdF4kZjGP5BE0TAPj5vEOII+geJgm1Gz9S5p46RSaGK1fQUMwgabPkzpxrqcZWV/vYA5PE1anDG4nrDw4VpFR0ZDhTtbzLp7p/03LW6B5qnaXV1tL27X2VusX8RjdWnTH96PapbXLuzIe7ZvdxBb9OkbXvtga9ca4EP6c38hb5DymsbduWY1pI2/bcRp5W8I4bXmLnMc08hY5P+/L36M/APYreu7rpU5/AAAAAElFTkSuQmCC);background-repeat:no-repeat;outline:none;opacity:0.8;}#fancybox-buttons a:hover{opacity:1;}#fancybox-buttons a.btnPrev{background-position:5px 0;}#fancybox-buttons a.btnNext{background-position:-33px 0;border-right:1px solid #3e3e3e;}#fancybox-buttons a.btnPlay{background-position:0 -30px;}#fancybox-buttons a.btnPlayOn{background-position:-30px -30px;}#fancybox-buttons a.btnToggle{background-position:3px -60px;border-left:1px solid #111;border-right:1px solid #3e3e3e;width:35px;}#fancybox-buttons a.btnToggleOn{background-position:-27px -60px;}#fancybox-buttons a.btnClose{border-left:1px solid #111;width:35px;background-position:-56px 0;}#fancybox-buttons a.btnDisabled{opacity:0.4;cursor:default;}\
-      .loadedTag, .loadedComment{display:none}.fbphotosphototagboxes{z-index:9997}.fancybox-nav{width:10%;}.igTag{padding: 1.5em;}.tagArrow{background-image: url(data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAABkAAABgCAMAAADfGilYAAABQVBMVEUAAABXV1dXV1dXV1dXV1dkZGRkZGQAAABXV1dXV1fj4+NXV1cAAAAAAABXV1dXV1cAAABXV1dXV1cdHR1XV1ciIiLi4uJXV1cnJyfl5eVXV1dXV1ff399XV1dXV1dXV1dXV1dXV1dXV1cXFxcAAABXV1dXV1dXV1cAAAA3NzdXV1dXV1dXV1cAAAAAAABXV1dXV1dXV1dXV1cAAAD+/v74+PhXV1dXV1f29vYeHh4tLS0AAAAyMjJXV1f5+flXV1f7+/v///9XV1dtfq9ugLCSn8PO0+Nrfqq9xdqKmL/x8fh1h7COnL5ugK/O1eKTocGkr87O1OTN0+Gnsc7L0eH4+PuRn8Crt85tgK/c4Oyos8+qtc1ugaytuNHx8vnX2+jx8viqtdFzhbOtt9ByhLHX3OiqtdC9xtuKl7/T2ebS2ObSpKIFAAAAQXRSTlMAFCzrgWZAfNNo5fkwLiY8MnLzhWCH49mJ5yp64x5CDo0yw4MG7Xz7Co0G1T5kSmwCk/1g/fcwOPeFiWKLZvn3+z0qeQsAAAJ7SURBVHhendLXctswEAXQJSVbVrdkW457r3FN7WUBkurFvab3/P8HZAGatCIsZ6zcJ2iOLrgYAKBcrrdbrXa9XAZApAX9RAQgaaNOW8lZWedMS11BmagOcKgAiY6VNAJp0DqQhpJWIC2A60CufVHLUBBDaaBOuJtOI5wA/QmOAzk2pr7y4QoBgpOe3pz0kE56eohaoiNlpYa1ipSq8v5b88vXoCE9VPGUuOdSyqZ7Ix1qqFYHwHOcyqeKIw988WpYkRWseQAdKWv4wXE6oVBHyw/1zZ+O/BzuRtG7fafPNJ2m/OiLPNByoCaoEjmyGsxW1VIlIXZIvECopCokyiVVQqnqipaLc0de3Iq8xCPpC142j7BLXM8N5OTXiZI7ZmAgCgYHiVhAJOJBEQ+aeNBkAEcaONLAkQaeCAyCu8XKRUAyNh6PANu6H+cBwBqK82Ar4mC2qFsmjKbF/AKR3QWWgqeCki7YMatL7CELdOeBEMUkdCeuaWvFWhVrM8DQpB3bF7vAkB1LbooCmEQAcyIPBo0TQH4RzOQs8ikb+OzlIDr8bnxogtc8DFlPaDgV/qQs2Jq4RnHWJJtgYV6kRw2imyukBSWvyOqmZFGIt7rTc9swsyZWrZUtMF/IrtiP2ZMMQEFsRrzEvJgDIgMoi3kg4p61PUVsTbJXsAf/kezDhMqOActL06iSYDpL0494gcyrx6YsKxhL4bNeyT7PQmYkhaUXpR55WRpRjdRIdmxi+x9JYGqjRJCB4XvDPYJvMDWWoeU69Aq+2/D/bQpO0Ea8EK0bspNQ2WY60alLisuJ9MMK/GaJ5I/Lt6QKS24obmSpn+kgAJ4gIi70k79vocBUxmfchgAAAABJRU5ErkJggg==);background-size: auto;background-repeat: no-repeat;display: inline-block;height: 11px;width: 20px;background-position: 0 -24px;margin-top:3px;}.tagInd{background-position: 0 -83px;float:right;}.dateInd{background-position:-12px 1px;text-indent:-100%;text-align:right;float:right;}.dateInd span{font-size:11px;padding-right:3px;visibility:hidden;}.dateInd:hover span{visibility:visible;}.vis{visibility:visible !important;}.commentInd{background-image: url(data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAA0AAAANCAYAAABy6+R8AAAAAXNSR0IArs4c6QAAAARnQU1BAACxjwv8YQUAAAAJcEhZcwAADsMAAA7DAcdvqGQAAAAadEVYdFNvZnR3YXJlAFBhaW50Lk5FVCB2My41LjEwMPRyoQAAAGJJREFUKFNjgIGJi47+905fQBCD1EG1MDCABIgBIHVQLSRqmrP2wn8QHo6aeuYdAwugYxiA8cFBDtME04iOYRpBNDSgGVA0YcMwjSiaYABZIVQIBWQ3bsStCcolDhCvgYEBADd1oN6ZvLbPAAAAAElFTkSuQmCC);background-position:0 0;float:right;cursor:pointer;}blockquote {padding: 0 0 0 15px;margin: 0 0 20px;border-left: 5px solid #eeeeee;}blockquote p {margin-bottom: 0;line-height: 1.25;}blockquote small {display: block;line-height: 20px;color: #999999;font-size: 85%;}blockquote small:before {content: "— ";}\
+      .loadedTag, .loadedComment{display:none}.fbphotosphototagboxes{z-index:9997}.fancybox-nav{width:10%;}.igTag{padding: 1.5em;}.tagArrow{background-image: url(data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAABkAAABgCAMAAADfGilYAAABQVBMVEUAAABXV1dXV1dXV1dXV1dkZGRkZGQAAABXV1dXV1fj4+NXV1cAAAAAAABXV1dXV1cAAABXV1dXV1cdHR1XV1ciIiLi4uJXV1cnJyfl5eVXV1dXV1ff399XV1dXV1dXV1dXV1dXV1dXV1cXFxcAAABXV1dXV1dXV1cAAAA3NzdXV1dXV1dXV1cAAAAAAABXV1dXV1dXV1dXV1cAAAD+/v74+PhXV1dXV1f29vYeHh4tLS0AAAAyMjJXV1f5+flXV1f7+/v///9XV1dtfq9ugLCSn8PO0+Nrfqq9xdqKmL/x8fh1h7COnL5ugK/O1eKTocGkr87O1OTN0+Gnsc7L0eH4+PuRn8Crt85tgK/c4Oyos8+qtc1ugaytuNHx8vnX2+jx8viqtdFzhbOtt9ByhLHX3OiqtdC9xtuKl7/T2ebS2ObSpKIFAAAAQXRSTlMAFCzrgWZAfNNo5fkwLiY8MnLzhWCH49mJ5yp64x5CDo0yw4MG7Xz7Co0G1T5kSmwCk/1g/fcwOPeFiWKLZvn3+z0qeQsAAAJ7SURBVHhendLXctswEAXQJSVbVrdkW457r3FN7WUBkurFvab3/P8HZAGatCIsZ6zcJ2iOLrgYAKBcrrdbrXa9XAZApAX9RAQgaaNOW8lZWedMS11BmagOcKgAiY6VNAJp0DqQhpJWIC2A60CufVHLUBBDaaBOuJtOI5wA/QmOAzk2pr7y4QoBgpOe3pz0kE56eohaoiNlpYa1ipSq8v5b88vXoCE9VPGUuOdSyqZ7Ix1qqFYHwHOcyqeKIw988WpYkRWseQAdKWv4wXE6oVBHyw/1zZ+O/BzuRtG7fafPNJ2m/OiLPNByoCaoEjmyGsxW1VIlIXZIvECopCokyiVVQqnqipaLc0de3Iq8xCPpC142j7BLXM8N5OTXiZI7ZmAgCgYHiVhAJOJBEQ+aeNBkAEcaONLAkQaeCAyCu8XKRUAyNh6PANu6H+cBwBqK82Ar4mC2qFsmjKbF/AKR3QWWgqeCki7YMatL7CELdOeBEMUkdCeuaWvFWhVrM8DQpB3bF7vAkB1LbooCmEQAcyIPBo0TQH4RzOQs8ikb+OzlIDr8bnxogtc8DFlPaDgV/qQs2Jq4RnHWJJtgYV6kRw2imyukBSWvyOqmZFGIt7rTc9swsyZWrZUtMF/IrtiP2ZMMQEFsRrzEvJgDIgMoi3kg4p61PUVsTbJXsAf/kezDhMqOActL06iSYDpL0494gcyrx6YsKxhL4bNeyT7PQmYkhaUXpR55WRpRjdRIdmxi+x9JYGqjRJCB4XvDPYJvMDWWoeU69Aq+2/D/bQpO0Ea8EK0bspNQ2WY60alLisuJ9MMK/GaJ5I/Lt6QKS24obmSpn+kgAJ4gIi70k79vocBUxmfchgAAAABJRU5ErkJggg==);background-size: auto;background-repeat: no-repeat;display: inline-block;height: 11px;width: 20px;background-position: 0 -24px;margin-top:3px;}.tagInd{background-position: 0 -83px;float:right;}.dateInd{background-position:-12px 1px;text-indent:-100%;text-align:right;float:right;}.dateInd span{font-size:11px;padding-right:3px;visibility:hidden;}.dateInd:hover span{visibility:visible;}.videoInd{float:right;margin-left:-6px;margin-top:-2px;}.vis{visibility:visible !important;}.commentInd{background-image: url(data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAA0AAAANCAYAAABy6+R8AAAAAXNSR0IArs4c6QAAAARnQU1BAACxjwv8YQUAAAAJcEhZcwAADsMAAA7DAcdvqGQAAAAadEVYdFNvZnR3YXJlAFBhaW50Lk5FVCB2My41LjEwMPRyoQAAAGJJREFUKFNjgIGJi47+905fQBCD1EG1MDCABIgBIHVQLSRqmrP2wn8QHo6aeuYdAwugYxiA8cFBDtME04iOYRpBNDSgGVA0YcMwjSiaYABZIVQIBWQ3bsStCcolDhCvgYEBADd1oN6ZvLbPAAAAAElFTkSuQmCC);background-position:0 0;float:right;cursor:pointer;}blockquote {padding: 0 0 0 15px;margin: 0 0 20px;border-left: 5px solid #eeeeee;}blockquote p {margin-bottom: 0;line-height: 1.25;}blockquote small {display: block;line-height: 20px;color: #999999;font-size: 85%;}blockquote small:before {content: "— ";}\
       /* .borderTagBox & .innerTagBox */\
       .fbPhotosPhotoTagboxes{height:100%;left:0;position:absolute;top:0;width:100%;/*pointer-events:none*/}.fbPhotosPhotoTagboxes .tagsWrapper{display:inline-block;height:100%;width:100%;position:relative;vertical-align:middle}.fbPhotosPhotoTagboxBase{line-height:normal;position:absolute}.imageLoading .fbPhotosPhotoTagboxBase{display:none}/*.fbPhotosPhotoTagboxBase .borderTagBox, .fbPhotosPhotoTagboxBase .innerTagBox{-webkit-box-sizing:border-box;height:100%;width:100%}.ieContentFix{display:none;font-size:200px;height:100%;overflow:hidden;width:100%}.fbPhotosPhotoTagboxBase .innerTagBox{border:4px solid #fff;border-color:rgba(255, 255, 255, .8)}*/.fbPhotosPhotoTagboxBase .tag{bottom:0;left:50%;position:absolute}.fbPhotosPhotoTagboxBase .tagPointer{left:-50%;position:relative}.fbPhotosPhotoTagboxBase .tagArrow{left:50%;margin-left:-10px;position:absolute;top:-10px}.fbPhotosPhotoTagboxBase .tagName{background:#fff;color:#404040;cursor:default;font-weight:normal;padding:2px 6px 3px;top:3px;white-space:nowrap}.fancybox-inner:hover .fbPhotosPhotoTagboxes{opacity:1;z-index:9998;}.fbPhotosPhotoTagboxes .tagBox .tag{top:85%;z-index:9999}.fbPhotosPhotoTagboxes .tag, .fbPhotosPhotoTagboxes .innerTagBox, .fbPhotosPhotoTagboxes .borderTagBox{visibility:hidden}.tagBox:hover .tag/*, .tagBox:hover .innerTagBox*/{opacity:1;/*-webkit-transition:opacity .2s linear;*/visibility:visible}</style>';
-    tHTML=tHTML+'<header id="hd"><div class="logo" id="logo"><div class="wrapper"><h1><a id="aName" href='+c.aLink+'>'+c.aName+'</a> '+((c.aAuth)?'- '+c.aAuth:"")+' <button onClick="cleanup()">ReStyle</button> <a download="'+c.aAuth+'.txt" target="_blank" href="'+rawUrl+'">saveRawData</a> <a download="'+c.aAuth+'-photos.txt" target="_blank" href="'+photoUrl+'">savePhotoUrl ('+photos.length+')</a> <a download="'+c.aAuth+'-videos.txt" target="_blank" href="'+videoUrl+'">saveVideoUrl ('+videos.length+')</a></h1><h1>Press Ctrl+S / [Mac]Command+S (with Complete option) to save all photos. [Photos are located in _files folder]</h1></div></div></header>';
+    tHTML=tHTML+'<header id="hd"><div class="logo" id="logo"><div class="wrapper"><h1><a id="aName" href='+c.aLink+'>'+c.aName+'</a> '+((c.aAuth)?'- '+c.aAuth:"")+' <button onClick="cleanup()">ReStyle</button> <a download="'+c.aAuth+'.txt" target="_blank" href="'+rawUrl+'">saveRawData</a> <a download="'+c.aAuth+'-photos.txt" target="_blank" href="'+photoUrl+'">savePhotoUrl ('+photos.length+')</a> <a download="'+c.aAuth+'-videos.txt" target="_blank" href="'+videoUrl+'">🎥 saveVideoUrl ('+videos.length+')</a></h1><h1>Press Ctrl+S / [Mac]Command+S (with Complete option) to save all photos. [Photos are located in _files folder]</h1></div></div></header>';
     tHTML=tHTML+'<center id="aTime">'+c.aTime+'</center><br><center id="aDes">'+c.aDes+'</center><center>Download at: '+c.dTime+'</center><br><div id="output" class="cName"></div><div class="wrapper"><div id="bd"><div id="container" class="masonry">';
     tHTML=tHTML+b.join("")+'</div></div></div><script src="https://rawgit.com/inDream/DownAlbum/master/assets/jquery.min.js"></script></body></html>';
     win.document.open();
